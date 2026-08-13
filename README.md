@@ -2,6 +2,10 @@
 
 Phaser 4 + Vite + TypeScript로 제작한 한국 설화풍 탑다운 액션 게임입니다. 세 전장의 다섯 스테이지를 돌파하고 중앙 제단의 봉인 다섯 개를 정화하세요.
 
+## 온라인 플레이
+
+https://ionholic.github.io/OpenAI-game-builders/
+
 ## 확장 콘텐츠
 
 - 전장: 사당의 달뜰, 통곡의 죽림, 장승의 관문, 핏빛 월궁, 망월대
