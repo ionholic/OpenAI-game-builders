@@ -106,9 +106,14 @@ async function runDeterministicAcceptance(browser, errors) {
 
   const elapsedBeforePause = current.elapsedSeconds;
   await page.keyboard.press('p');
+  const pausedAt = (await state(page)).elapsedSeconds;
   await advance(page, 800);
   current = await state(page);
-  assert(current.paused && Math.abs(current.elapsedSeconds - elapsedBeforePause) <= 0.02, 'QA-29 P pauses simulation time and displays settings', current);
+  assert(
+    current.paused && Math.abs(current.elapsedSeconds - pausedAt) <= 0.02,
+    'QA-29 P pauses simulation time and displays settings',
+    { ...current, inputLatencySeconds: Number((pausedAt - elapsedBeforePause).toFixed(2)) },
+  );
   await page.evaluate(() => {
     window.__WOLHA_QA__.toggleVolume();
     window.__WOLHA_QA__.toggleQuality();
