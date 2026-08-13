@@ -1,0 +1,41 @@
+:root {
+  color-scheme: dark;
+  font-family: "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
+  background: #050a16;
+  color: #f8f1dd;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background:
+    radial-gradient(circle at 50% 25%, rgba(43, 74, 126, 0.28), transparent 44%),
+    linear-gradient(180deg, #09142b 0%, #03060d 100%);
+}
+
+#app {
+  display: grid;
+  place-items: center;
+}
+
+#app canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  outline: 1px solid rgba(230, 205, 137, 0.24);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.62);
+}
