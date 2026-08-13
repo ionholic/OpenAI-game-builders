@@ -20,6 +20,12 @@ export interface QaBridge {
     playerFrames: number;
     playerFrameWidth: number;
     playerFrameHeight: number;
+    comboFrames: number;
+    comboFrameWidth: number;
+    comboFrameHeight: number;
+    meleeAttackFrames: number;
+    meleeAttackFrameWidth: number;
+    meleeAttackFrameHeight: number;
     vfxFrames: number;
     vfxFrameWidth: number;
     vfxFrameHeight: number;

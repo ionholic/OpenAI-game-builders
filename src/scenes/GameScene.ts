@@ -18,6 +18,8 @@ const ATTACK_RANGE = 94;
 const ATTACK_HALF_ANGLE = Phaser.Math.DegToRad(58);
 const COMBO_WINDOW = 0.62;
 const COMBO_DAMAGE = [34, 40, 52] as const;
+const COMBO_ATTACK_DURATION = [0.18, 0.2, 0.26] as const;
+const COMBO_ATTACK_COOLDOWN = [0.27, 0.3, 0.38] as const;
 const HEAVY_DAMAGE = 78;
 const HEAVY_RANGE = 124;
 const HEAVY_COOLDOWN = 1.15;
@@ -62,9 +64,14 @@ interface Enemy {
   radius: number;
   damage: number;
   displaySize: number;
+  baseTexture: string;
   attackCooldown: number;
   shotCooldown: number;
   windup: number;
+  attackDuration: number;
+  attackResolved: boolean;
+  attackFacingX: number;
+  attackFacingY: number;
   hitFlash: number;
   castFlash: number;
   motion: number;
@@ -207,6 +214,14 @@ export class GameScene extends Phaser.Scene {
 
   private attackFxTime = 0;
 
+  private attackDuration: number = COMBO_ATTACK_DURATION[0];
+
+  private attackMotionStep = 1;
+
+  private attackFacingX = 0;
+
+  private attackFacingY = -1;
+
   private comboStep = 0;
 
   private comboTimer = 0;
@@ -323,6 +338,10 @@ export class GameScene extends Phaser.Scene {
     this.talismanQueued = false;
     this.attackCooldown = 0;
     this.attackFxTime = 0;
+    this.attackDuration = COMBO_ATTACK_DURATION[0];
+    this.attackMotionStep = 1;
+    this.attackFacingX = 0;
+    this.attackFacingY = -1;
     this.comboStep = 0;
     this.comboTimer = 0;
     this.dashAttackReady = false;
@@ -456,7 +475,11 @@ export class GameScene extends Phaser.Scene {
         invulnerable: this.invulnerable > 0,
         animation: this.getPlayerAnimationState(),
         comboStep: this.comboStep,
+        attackMotionStep: this.attackMotionStep,
+        spriteTexture: this.playerSprite?.texture.key ?? '',
         comboTimer: round(this.comboTimer),
+        attackDirectionX: round(this.attackFacingX),
+        attackDirectionY: round(this.attackFacingY),
         dashAttackReady: this.dashAttackReady,
         dashAttackTimer: round(this.dashAttackTimer),
         parryCounterReady: this.parryCounterReady,
@@ -491,8 +514,9 @@ export class GameScene extends Phaser.Scene {
         y: round(enemy.y),
         hp: round(enemy.hp),
         maxHp: enemy.maxHp,
-        state: enemy.windup > 0 ? 'windup' : ['wisp', 'reaper'].includes(enemy.type) ? 'ranged' : 'chase',
+        state: enemy.windup > 0 ? this.getEnemyAnimationState(enemy) : ['wisp', 'reaper'].includes(enemy.type) ? 'ranged' : 'chase',
         animation: this.getEnemyAnimationState(enemy),
+        attackFrame: this.isMeleeEnemy(enemy.type) && enemy.windup > 0 ? Number(enemy.sprite.frame.name) : -1,
         warningRadius: enemy.windup > 0 ? enemy.radius + PLAYER_RADIUS + 20 : 0,
       })),
       projectiles: this.projectiles.map((projectile) => ({
@@ -513,6 +537,7 @@ export class GameScene extends Phaser.Scene {
       })),
       combatVfx: {
         attackVisible: this.attackFxSprite?.visible ?? false,
+        attackStyle: this.attackFxTime > 0 ? (this.attackMotionStep === 3 ? 'moonlight_finisher' : 'restrained_arc') : 'none',
         attackFrame: this.attackFxSprite ? Number(this.attackFxSprite.frame.name) : -1,
         heavyVisible: this.heavyFxSprite?.visible ?? false,
         heavyFrame: this.heavyFxSprite ? Number(this.heavyFxSprite.frame.name) : -1,
@@ -863,7 +888,20 @@ export class GameScene extends Phaser.Scene {
     const isCounter = this.parryCounterReady;
     const isDashAttack = this.dashAttackReady;
     const nextCombo = this.comboTimer > 0 ? (this.comboStep % 3) + 1 : 1;
+    const movement = this.readMovementDirection();
+    let attackX = movement.x || this.facingX;
+    let attackY = movement.y || this.facingY;
+    const attackLength = Math.hypot(attackX, attackY) || 1;
+    attackX /= attackLength;
+    attackY /= attackLength;
+    this.attackFacingX = attackX;
+    this.attackFacingY = attackY;
+    if (Math.hypot(movement.x, movement.y) > 0) {
+      this.facingX = attackX;
+      this.facingY = attackY;
+    }
     this.comboStep = nextCombo;
+    this.attackMotionStep = isCounter || isDashAttack ? 3 : nextCombo;
     this.comboTimer = COMBO_WINDOW;
     this.parryCounterReady = false;
     this.parryCounterTimer = 0;
@@ -872,8 +910,9 @@ export class GameScene extends Phaser.Scene {
     const damage = isCounter ? 76 : isDashAttack ? 58 : COMBO_DAMAGE[nextCombo - 1];
     const range = isCounter ? 126 : isDashAttack ? 116 : ATTACK_RANGE + (nextCombo - 1) * 8;
     const halfAngle = isCounter ? Phaser.Math.DegToRad(80) : ATTACK_HALF_ANGLE + Phaser.Math.DegToRad((nextCombo - 1) * 7);
-    this.attackCooldown = isCounter ? 0.26 : nextCombo === 3 ? 0.38 : 0.32;
-    this.attackFxTime = 0.12;
+    this.attackDuration = isCounter || isDashAttack ? COMBO_ATTACK_DURATION[2] : COMBO_ATTACK_DURATION[nextCombo - 1];
+    this.attackCooldown = isCounter ? 0.3 : isDashAttack ? 0.34 : COMBO_ATTACK_COOLDOWN[nextCombo - 1];
+    this.attackFxTime = this.attackDuration;
     audioSynth.tone(isCounter ? 660 : 290 + nextCombo * 55, 0.085, 'triangle', isCounter ? 0.04 : 0.028);
 
     const cosineThreshold = Math.cos(halfAngle);
@@ -882,7 +921,7 @@ export class GameScene extends Phaser.Scene {
       const dy = enemy.y - this.playerY;
       const distance = Math.hypot(dx, dy);
       if (distance > range + enemy.radius || distance < 0.001) continue;
-      const dot = (dx / distance) * this.facingX + (dy / distance) * this.facingY;
+      const dot = (dx / distance) * this.attackFacingX + (dy / distance) * this.attackFacingY;
       if (dot < cosineThreshold) continue;
       this.damageEnemy(enemy, damage, dx / distance, dy / distance);
     }
@@ -1112,6 +1151,11 @@ export class GameScene extends Phaser.Scene {
       castFlash: 0,
       motion: this.nextEnemyId * 0.83,
       displaySize,
+      baseTexture: texture,
+      attackDuration: 0,
+      attackResolved: false,
+      attackFacingX: 1,
+      attackFacingY: 0,
       sprite,
       warning,
       warningLabel,
@@ -1137,8 +1181,16 @@ export class GameScene extends Phaser.Scene {
 
       if (enemy.windup > 0) {
         enemy.windup = Math.max(0, enemy.windup - delta);
+        const attackProgress = 1 - enemy.windup / enemy.attackDuration;
+        if (!enemy.attackResolved && attackProgress >= 0.42) {
+          const strikeDistance = enemy.radius + PLAYER_RADIUS + 24;
+          const strikeDot = directionX * enemy.attackFacingX + directionY * enemy.attackFacingY;
+          if (distance <= strikeDistance && strikeDot >= Math.cos(Phaser.Math.DegToRad(78))) {
+            this.damagePlayer(enemy.damage);
+          }
+          enemy.attackResolved = true;
+        }
         if (enemy.windup === 0) {
-          if (distance <= enemy.radius + PLAYER_RADIUS + 20) this.damagePlayer(enemy.damage);
           enemy.attackCooldown = isBoss(enemy.type) ? 1.1 : enemy.type === 'gwishin' ? 0.7 : 0.9;
         }
       } else if (enemy.type === 'wisp' || enemy.type === 'reaper') {
@@ -1162,7 +1214,11 @@ export class GameScene extends Phaser.Scene {
       } else {
         const attackDistance = enemy.radius + PLAYER_RADIUS + 16;
         if (distance <= attackDistance && enemy.attackCooldown <= 0) {
-          enemy.windup = isBoss(enemy.type) || enemy.type === 'bulgasari' ? 0.36 : enemy.type === 'gwishin' ? 0.16 : 0.24;
+          enemy.attackDuration = this.getEnemyAttackDuration(enemy.type);
+          enemy.windup = enemy.attackDuration;
+          enemy.attackResolved = false;
+          enemy.attackFacingX = directionX;
+          enemy.attackFacingY = directionY;
         } else if (distance > attackDistance) {
           enemy.x += directionX * enemy.speed * delta;
           enemy.y += directionY * enemy.speed * delta;
@@ -1395,11 +1451,11 @@ export class GameScene extends Phaser.Scene {
       playerBob = -3;
       playerAngle = this.facingX * 9;
     } else if (playerState === 'attack' || playerState === 'heavy' || playerState === 'talisman' || playerState === 'guard') {
-      const slash = 1 - this.attackFxTime / 0.12;
+      const slash = 1 - this.attackFxTime / this.attackDuration;
       playerWidth = playerState === 'heavy' ? 106 : playerState === 'guard' ? 90 : 102;
       playerHeight = playerState === 'heavy' ? 126 : 120;
       playerBob = -2;
-      playerAngle = playerState === 'attack' ? (slash - 0.5) * 18 * (this.facingX < 0 ? -1 : 1) : 0;
+      playerAngle = playerState === 'attack' ? (slash - 0.5) * (this.attackMotionStep === 3 ? 8 : 5) : 0;
     } else if (playerState === 'hit') {
       playerWidth = 94;
       playerHeight = 122;
@@ -1419,9 +1475,20 @@ export class GameScene extends Phaser.Scene {
       hit: 7,
     };
     const playerPhase = this.getPlayerAnimationPhase(playerState);
-    const playerFrame = playerColumn[playerState] + playerPhase * 8;
-    this.playerSprite.setFrame(playerFrame).setPosition(this.playerX, this.playerY + playerBob).setDisplaySize(playerWidth, playerHeight).setAngle(playerAngle);
-    this.playerSprite.setFlipX(this.facingX < -0.08);
+    const usingComboSheet = playerState === 'attack';
+    const playerFrame = usingComboSheet
+      ? (this.attackMotionStep - 1) * 4 + playerPhase
+      : playerColumn[playerState] + playerPhase * 8;
+    const visualFacingX = usingComboSheet ? this.attackFacingX : this.facingX;
+    const visualFacingY = usingComboSheet ? this.attackFacingY : this.facingY;
+    const lunge = usingComboSheet ? Math.sin(Math.PI * Phaser.Math.Clamp(1 - this.attackFxTime / this.attackDuration, 0, 1)) * (this.attackMotionStep === 3 ? 15 : 9) : 0;
+    this.playerSprite
+      .setTexture(usingComboSheet ? 'player-warden-combo-v1' : 'player-warden-motion-v3')
+      .setFrame(playerFrame)
+      .setPosition(this.playerX + visualFacingX * lunge, this.playerY + playerBob + visualFacingY * lunge)
+      .setDisplaySize(playerWidth, playerHeight)
+      .setAngle(playerAngle + visualFacingY * -2.5);
+    this.playerSprite.setFlipX(visualFacingX < -0.08);
     this.playerSprite.setAlpha(this.damageFlash > 0 ? 0.5 : 1);
     this.playerShadow.setPosition(this.playerX, this.playerY + 38);
     this.dashRing
@@ -1455,6 +1522,24 @@ export class GameScene extends Phaser.Scene {
       this.worldGraphics.lineStyle(8, 0xffbd61, alpha * 0.82);
       this.worldGraphics.strokeCircle(this.playerX, this.playerY, HEAVY_RANGE * (1.08 - alpha * 0.08));
     }
+    if (this.attackFxTime > 0 && this.attackMotionStep < 3) {
+      const progress = Phaser.Math.Clamp(1 - this.attackFxTime / this.attackDuration, 0, 1);
+      const direction = Math.atan2(this.attackFacingY, this.attackFacingX);
+      const sweep = this.attackMotionStep === 1 ? -0.52 : 0.58;
+      const radius = this.attackMotionStep === 1 ? 58 : 70;
+      const alpha = Math.sin(progress * Math.PI) * 0.65;
+      this.worldGraphics.lineStyle(this.attackMotionStep === 1 ? 3 : 4, 0x9cebea, alpha);
+      this.worldGraphics.beginPath();
+      this.worldGraphics.arc(
+        this.playerX,
+        this.playerY,
+        radius,
+        direction - sweep,
+        direction + sweep,
+        this.attackMotionStep === 2,
+      );
+      this.worldGraphics.strokePath();
+    }
 
     for (const enemy of this.enemies) {
       const state = this.getEnemyAnimationState(enemy);
@@ -1483,7 +1568,14 @@ export class GameScene extends Phaser.Scene {
         width *= 1.14;
         height *= 0.86;
         enemyBob += 5;
-        angle += this.playerX > enemy.x ? 7 : -7;
+      } else if (state === 'attack') {
+        width *= 1.18;
+        height *= 1.04;
+        enemyBob -= 4;
+      } else if (state === 'recover') {
+        width *= 1.06;
+        height *= 0.94;
+        enemyBob += 3;
       } else if (state === 'cast') {
         width *= 1.12;
         height *= 1.12;
@@ -1494,9 +1586,17 @@ export class GameScene extends Phaser.Scene {
         height *= 1.08;
         angle += Math.sin(this.elapsedSeconds * 60) * 8;
       }
-      const enemyFrame = state === 'windup' || state === 'cast' ? 3 : state === 'hit' ? 2 : Math.floor(enemy.motion / 1.4) % 3;
-      enemy.sprite.setFrame(enemyFrame).setPosition(enemy.x, enemy.y + enemyBob).setDisplaySize(width, height).setAngle(angle);
-      enemy.sprite.setFlipX(this.playerX > enemy.x);
+      const usingMeleeAttackSheet = this.isMeleeEnemy(enemy.type) && enemy.windup > 0;
+      const enemyFrame = usingMeleeAttackSheet
+        ? this.getEnemyAttackRow(enemy.type) * 4 + this.getEnemyAttackPhase(enemy)
+        : state === 'cast' ? 3 : state === 'hit' ? 2 : Math.floor(enemy.motion / 1.4) % 3;
+      enemy.sprite
+        .setTexture(usingMeleeAttackSheet ? 'melee-enemy-attacks-v1' : enemy.baseTexture)
+        .setFrame(enemyFrame)
+        .setPosition(enemy.x, enemy.y + enemyBob)
+        .setDisplaySize(width, height)
+        .setAngle(angle);
+      enemy.sprite.setFlipX(usingMeleeAttackSheet ? enemy.attackFacingX < -0.08 : this.playerX > enemy.x);
       enemy.warning.setPosition(enemy.x, enemy.y + 16).setVisible(enemy.windup > 0);
       enemy.warningLabel
         .setPosition(enemy.x, enemy.y - enemy.radius - PLAYER_RADIUS - 22)
@@ -1556,17 +1656,17 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateCombatVfxSprites(): void {
-    const baseAngle = Math.atan2(this.facingY, this.facingX);
-    if (this.attackFxTime > 0) {
-      const progress = Phaser.Math.Clamp(1 - this.attackFxTime / 0.12, 0, 0.999);
+    const baseAngle = Math.atan2(this.attackFacingY, this.attackFacingX);
+    if (this.attackFxTime > 0 && this.attackMotionStep === 3) {
+      const progress = Phaser.Math.Clamp(1 - this.attackFxTime / this.attackDuration, 0, 0.999);
       const frame = Math.floor(progress * 4);
       this.attackFxSprite
         .setVisible(true)
         .setFrame(frame)
-        .setPosition(this.playerX + this.facingX * 42, this.playerY + this.facingY * 42)
+        .setPosition(this.playerX + this.attackFacingX * 38, this.playerY + this.attackFacingY * 38)
         .setRotation(baseAngle)
-        .setDisplaySize(ATTACK_RANGE * 2.05, ATTACK_RANGE * 1.45)
-        .setAlpha(1 - progress * 0.25);
+        .setDisplaySize(ATTACK_RANGE * 1.7, ATTACK_RANGE * 1.08)
+        .setAlpha(0.76 - progress * 0.16);
     } else {
       this.attackFxSprite.setVisible(false);
     }
@@ -1650,7 +1750,7 @@ export class GameScene extends Phaser.Scene {
       Phaser.Math.Clamp(Math.floor(progress * 4), 0, 3);
 
     if (state === 'run') return Math.floor(this.playerMotion * 0.9) % 4;
-    if (state === 'attack') return phaseFromProgress(1 - this.attackFxTime / 0.12);
+    if (state === 'attack') return phaseFromProgress(1 - this.attackFxTime / this.attackDuration);
     if (state === 'heavy') return phaseFromProgress(1 - this.heavyFxTime / 0.32);
     if (state === 'talisman') return phaseFromProgress(1 - this.talismanFxTime / 0.28);
     if (state === 'dash') return phaseFromProgress(1 - this.dashRemaining / DASH_DURATION);
@@ -1659,11 +1759,42 @@ export class GameScene extends Phaser.Scene {
     return Math.floor(this.elapsedSeconds * 4) % 4;
   }
 
-  private getEnemyAnimationState(enemy: Enemy): 'walk' | 'hover' | 'windup' | 'cast' | 'hit' {
+  private getEnemyAnimationState(enemy: Enemy): 'walk' | 'hover' | 'windup' | 'attack' | 'recover' | 'cast' | 'hit' {
+    if (enemy.windup > 0) {
+      const phase = this.getEnemyAttackPhase(enemy);
+      if (phase === 0) return 'windup';
+      if (phase <= 2) return 'attack';
+      return 'recover';
+    }
     if (enemy.hitFlash > 0) return 'hit';
-    if (enemy.windup > 0) return 'windup';
     if (enemy.castFlash > 0) return 'cast';
     return ['wisp', 'reaper'].includes(enemy.type) ? 'hover' : 'walk';
+  }
+
+  private isMeleeEnemy(type: EnemyType): boolean {
+    return type !== 'wisp' && type !== 'reaper';
+  }
+
+  private getEnemyAttackDuration(type: EnemyType): number {
+    if (type === 'bulgasari' || type === 'moonlord') return 0.58;
+    if (type === 'gwishin') return 0.42;
+    if (type === 'boss') return 0.54;
+    return 0.48;
+  }
+
+  private getEnemyAttackRow(type: EnemyType): number {
+    if (type === 'gwishin') return 1;
+    if (type === 'bulgasari' || type === 'moonlord') return 2;
+    return 0;
+  }
+
+  private getEnemyAttackPhase(enemy: Enemy): number {
+    if (enemy.attackDuration <= 0) return 0;
+    const progress = Phaser.Math.Clamp(1 - enemy.windup / enemy.attackDuration, 0, 0.999);
+    if (progress < 0.34) return 0;
+    if (progress < 0.53) return 1;
+    if (progress < 0.76) return 2;
+    return 3;
   }
 
   private showMessage(message: string, duration: number): void {
@@ -1725,8 +1856,14 @@ export class GameScene extends Phaser.Scene {
       playerFrame: () => Number(this.playerSprite.frame.name),
       spriteSheetMetrics: () => ({
         playerFrames: this.textures.get('player-warden-motion-v3').frameTotal - 1,
-        playerFrameWidth: this.playerSprite.frame.cutWidth,
-        playerFrameHeight: this.playerSprite.frame.cutHeight,
+        playerFrameWidth: 224,
+        playerFrameHeight: 256,
+        comboFrames: this.textures.get('player-warden-combo-v1').frameTotal - 1,
+        comboFrameWidth: 256,
+        comboFrameHeight: 256,
+        meleeAttackFrames: this.textures.get('melee-enemy-attacks-v1').frameTotal - 1,
+        meleeAttackFrameWidth: 320,
+        meleeAttackFrameHeight: 256,
         vfxFrames: this.textures.get('combat-vfx-v1').frameTotal - 1,
         vfxFrameWidth: this.attackFxSprite.frame.cutWidth,
         vfxFrameHeight: this.attackFxSprite.frame.cutHeight,

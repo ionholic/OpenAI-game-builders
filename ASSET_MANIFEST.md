@@ -24,6 +24,8 @@
 
 `player-warden-motion-v4-normalized.png`와 `combat-vfx-v2-normalized.png`는 생성 이미지 내부의 자세가 명목 격자선을 넘던 문제를 교정한 런타임 시트입니다. 단순 등분 대신 실제 투명 여백에서 프레임 경계를 찾고, 주인공은 발 기준 정렬한 224×256 셀 32개, VFX는 중앙 정렬한 384×256 셀 16개로 재패킹합니다. 모든 프레임에 최소 10px 투명 안전 여백을 검증합니다. v3/v1 파일은 원본 진단과 재생성을 위해 보존합니다.
 
+`player-warden-combo-v1.png`는 4열×3행, 12프레임 기본 콤보 시트입니다. 행은 빠른 횡베기·역방향 올려베기·강한 월광 마무리이며, 열은 예비·타격·후속·회수 단계입니다. `melee-enemy-attacks-v1.png`는 같은 4단계를 도깨비·갓귀신·불가사리 3개 행에 배치한 근접 공격 시트입니다. 두 에셋은 단색 배경 원본을 크로마키 처리하고 `tools/repack_action_sheets.py`로 발 기준 정렬 및 최소 12px 투명 여백을 검증했습니다. 생성 원본과 투명 중간본은 `assets/source-generated/`에 보존합니다.
+
 ## 생성 프롬프트 요약
 
 ### 전투장
@@ -61,6 +63,7 @@
 ```powershell
 python tools/prepare_assets.py
 python tools/normalize_sprite_sheets.py
+python tools/repack_action_sheets.py
 ```
 
 배경은 중앙 기준으로 16:9 크롭 후 WebP로 압축하며, 기본 스프라이트는 알파 경계에 맞춰 크롭하고 투명 512×512 캔버스에 정렬합니다. 생성형 다중 프레임 시트는 두 번째 명령으로 투명 분리선 탐색, 셀 재배치, 안전 여백 검증을 수행합니다.

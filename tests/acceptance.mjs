@@ -130,6 +130,12 @@ async function runDeterministicAcceptance(browser, errors) {
     spriteSheetMetrics.playerFrames === 32 &&
       spriteSheetMetrics.playerFrameWidth === 224 &&
       spriteSheetMetrics.playerFrameHeight === 256 &&
+      spriteSheetMetrics.comboFrames === 12 &&
+      spriteSheetMetrics.comboFrameWidth === 256 &&
+      spriteSheetMetrics.comboFrameHeight === 256 &&
+      spriteSheetMetrics.meleeAttackFrames === 12 &&
+      spriteSheetMetrics.meleeAttackFrameWidth === 320 &&
+      spriteSheetMetrics.meleeAttackFrameHeight === 256 &&
       spriteSheetMetrics.vfxFrames === 16 &&
       spriteSheetMetrics.vfxFrameWidth === 384 &&
       spriteSheetMetrics.vfxFrameHeight === 256,
@@ -185,7 +191,7 @@ async function runDeterministicAcceptance(browser, errors) {
   await advance(page, 1000 / 60);
   current = await state(page);
   assert(current.player.animation === 'attack' && current.enemies[0]?.hp === 34, 'QA-04 melee selects the attack sprite motion and deals exactly one 34-damage hit', current);
-  assert(current.combatVfx.attackVisible && current.combatVfx.attackFrame >= 0 && current.combatVfx.attackFrame <= 3, 'QA-27 melee uses the animated slash effect sheet', current.combatVfx);
+  assert(!current.combatVfx.attackVisible && current.combatVfx.attackStyle === 'restrained_arc', 'QA-27 first strike suppresses the oversized moonlight sheet and uses a restrained arc', current.combatVfx);
   assert(current.player.comboStep === 1 && current.combatVfx.bursts > 0, 'QA-31 first combo strike starts the chain and creates a hit burst', current);
   await captureCanvas(page, '03-player-attack.png');
   await page.keyboard.press('KeyJ');
@@ -199,20 +205,89 @@ async function runDeterministicAcceptance(browser, errors) {
   assert(current.enemies.length === 0 && current.altar.active, 'QA-08 final enemy death activates the altar', current);
 
   await advance(page, 800);
+  const comboDirections = [
+    { key: 'ArrowRight', type: 'dokkaebi', expectedStep: 1, x: 1, y: 0, targetX: 590, targetY: 500, hp: 66 },
+    { key: 'ArrowUp', type: 'gwishin', expectedStep: 2, x: 0, y: -1, targetX: 500, targetY: 410, hp: 60 },
+    { key: 'ArrowLeft', type: 'bulgasari', expectedStep: 3, x: -1, y: 0, targetX: 410, targetY: 500, hp: 48 },
+  ];
+  for (const strike of comboDirections) {
+    const targetId = await page.evaluate((setup) => {
+      window.__WOLHA_QA__.clearWave();
+      window.__WOLHA_QA__.setPlayerPosition(500, 500);
+      return window.__WOLHA_QA__.placeEnemy(setup.type, setup.targetX, setup.targetY, 100);
+    }, strike);
+    for (const arrow of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) await page.keyboard.up(arrow);
+    await advance(page, 1000 / 60);
+    await page.keyboard.down(strike.key);
+    await advance(page, 1000 / 60);
+    await page.keyboard.press('KeyJ');
+    await advance(page, 1000 / 60);
+    await page.keyboard.up(strike.key);
+    current = await state(page);
+    const target = current.enemies.find((enemy) => enemy.id === targetId);
+    const playerFrame = await page.evaluate(() => window.__WOLHA_QA__.playerFrame());
+    assert(
+      current.player.comboStep === strike.expectedStep &&
+        Math.abs(current.player.attackDirectionX - strike.x) < 0.01 &&
+        Math.abs(current.player.attackDirectionY - strike.y) < 0.01,
+      `QA-32 combo strike ${strike.expectedStep} locks to its movement/facing direction`,
+      current.player,
+    );
+    assert(
+      current.player.spriteTexture === 'player-warden-combo-v1' &&
+        playerFrame >= (strike.expectedStep - 1) * 4 && playerFrame < strike.expectedStep * 4,
+      `QA-38 combo strike ${strike.expectedStep} uses its own four-frame motion row`,
+      { playerFrame, strike, player: current.player },
+    );
+    assert(target?.hp === strike.hp, `QA-32 combo strike ${strike.expectedStep} deals its exact directional damage`, target ?? {});
+    if (strike.expectedStep < 3) {
+      assert(!current.combatVfx.attackVisible && current.combatVfx.attackStyle === 'restrained_arc', `QA-39 combo strike ${strike.expectedStep} keeps effects restrained`, current.combatVfx);
+      await advance(page, 400);
+    } else {
+      assert(current.combatVfx.attackVisible && current.combatVfx.attackStyle === 'moonlight_finisher', 'QA-39 only the third combo strike uses the moonlight slash sheet', current.combatVfx);
+      await captureCanvas(page, '04-combo-finisher.png');
+    }
+  }
+
+  await advance(page, 800);
   await page.evaluate(() => {
     window.__WOLHA_QA__.clearWave();
     window.__WOLHA_QA__.setPlayerPosition(500, 500);
-    window.__WOLHA_QA__.placeEnemy('bulgasari', 585, 500, 180);
+    window.__WOLHA_QA__.placeEnemy('dokkaebi', 548, 500, 100);
+    window.__WOLHA_QA__.placeEnemy('gwishin', 500, 448, 100);
+    window.__WOLHA_QA__.placeEnemy('bulgasari', 448, 500, 100);
   });
-  await holdAndAdvance(page, 'ArrowRight', 1000 / 60);
-  for (const expectedStep of [1, 2, 3]) {
-    await page.keyboard.press('KeyJ');
-    await advance(page, 1000 / 60);
+  const observedEnemyStates = new Set();
+  const observedEnemyFrames = new Map();
+  let capturedEnemyStrike = false;
+  for (let sample = 0; sample < 30; sample += 1) {
+    await advance(page, 40);
     current = await state(page);
-    assert(current.player.comboStep === expectedStep, `QA-32 combo advances to strike ${expectedStep}`, current.player);
-    if (expectedStep < 3) await advance(page, 400);
+    for (const enemy of current.enemies) {
+      observedEnemyStates.add(enemy.animation);
+      if (enemy.attackFrame >= 0) {
+        if (!observedEnemyFrames.has(enemy.type)) observedEnemyFrames.set(enemy.type, new Set());
+        observedEnemyFrames.get(enemy.type).add(enemy.attackFrame);
+      }
+    }
+    if (!capturedEnemyStrike && current.enemies.some((enemy) => enemy.animation === 'attack')) {
+      await captureCanvas(page, '05-melee-enemy-strikes.png');
+      capturedEnemyStrike = true;
+    }
   }
-  assert(current.enemies[0]?.hp === 54, 'QA-32 three-hit combo deals 34, 40, and 52 damage', current.enemies[0] ?? {});
+  assert(
+    observedEnemyStates.has('windup') && observedEnemyStates.has('attack') && observedEnemyStates.has('recover'),
+    'QA-40 melee enemies visibly pass through anticipation, strike, and recovery',
+    { observedEnemyStates: [...observedEnemyStates] },
+  );
+  assert(
+    [...(observedEnemyFrames.get('dokkaebi') ?? [])].every((frame) => frame >= 0 && frame <= 3) &&
+      [...(observedEnemyFrames.get('gwishin') ?? [])].every((frame) => frame >= 4 && frame <= 7) &&
+      [...(observedEnemyFrames.get('bulgasari') ?? [])].every((frame) => frame >= 8 && frame <= 11),
+    'QA-41 each melee monster family uses its dedicated attack-motion row without cell spill',
+    Object.fromEntries([...observedEnemyFrames].map(([type, frames]) => [type, [...frames]])),
+  );
+  assert(current.player.hp < 100, 'QA-42 melee damage occurs during the visible strike phase', current.player);
 
   await page.evaluate(() => {
     window.__WOLHA_QA__.clearWave();
@@ -225,7 +300,7 @@ async function runDeterministicAcceptance(browser, errors) {
   current = await state(page);
   assert(current.player.animation === 'heavy' && current.enemies[0]?.hp === 72 && current.player.heavyCooldown > 1, 'QA-20 E heavy attack uses its unique pose, deals 78 damage, and starts cooldown', current);
   assert(current.combatVfx.heavyVisible && current.combatVfx.heavyFrame >= 4 && current.combatVfx.heavyFrame <= 7, 'QA-27 heavy attack uses the animated ground-impact effect sheet', current.combatVfx);
-  await captureCanvas(page, '04-heavy-attack.png');
+  await captureCanvas(page, '06-heavy-attack.png');
   await advance(page, 1050);
   await page.keyboard.press('KeyE');
   await advance(page, 1000 / 60);
@@ -250,7 +325,7 @@ async function runDeterministicAcceptance(browser, errors) {
   await advance(page, 100);
   current = await state(page);
   assert(current.playerTalismans[0]?.frame !== talismanFrameA, 'QA-28 talisman projectile cycles through sprite-sheet frames while flying', { talismanFrameA, current: current.playerTalismans[0] });
-  await captureCanvas(page, '05-talisman-throw.png');
+  await captureCanvas(page, '07-talisman-throw.png');
   await advance(page, 600);
   current = await state(page);
   assert(current.enemies[0]?.hp === 20 && current.playerTalismans.length === 0, 'QA-21 talisman travels, hits once for 48 damage, and disappears', current);
