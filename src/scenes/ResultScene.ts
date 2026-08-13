@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 
-import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { configureSceneCamera, GAME_HEIGHT, GAME_WIDTH } from '../config';
 import { audioSynth } from '../audio/AudioSynth';
 import { stateBridge } from '../testing/StateBridge';
 import { makeFullscreenButton, textStyle } from './sceneUi';
@@ -40,6 +40,7 @@ export class ResultScene extends Phaser.Scene {
   }
 
   create(): void {
+    configureSceneCamera(this);
     stateBridge.setActive(this);
 
     this.add

@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 
-import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { configureSceneCamera, GAME_HEIGHT, GAME_WIDTH } from '../config';
 import { audioSynth } from '../audio/AudioSynth';
 import { stateBridge } from '../testing/StateBridge';
 import { makeFullscreenButton, textStyle } from './sceneUi';
@@ -13,6 +13,7 @@ export class TitleScene extends Phaser.Scene {
   }
 
   create(): void {
+    configureSceneCamera(this);
     this.started = false;
     stateBridge.setActive(this);
 
@@ -62,7 +63,7 @@ export class TitleScene extends Phaser.Scene {
       .text(
         GAME_WIDTH / 2,
         guidePlate.y,
-        '이동 WASD/방향키 · 공격 J/클릭 · 강공격 E · 부적 Q\n방어/튕겨내기 C · 대시 Shift/우클릭 · 정화 R 유지',
+        '이동 WASD/방향키 · 공격 J/클릭 · 강공격 E · 부적 Q\n방어/튕겨내기 C · 대시 Shift/우클릭 · 정화 R · 일시정지 P',
         {
           ...textStyle,
           fontSize: '20px',
@@ -134,7 +135,7 @@ export class TitleScene extends Phaser.Scene {
       coordinates: 'origin top-left; +x right; +y down; pixels',
       title: '월하진혼',
       objective: '세 전장의 다섯 스테이지를 돌파하고 봉인 다섯 개를 정화한다',
-      controls: ['WASD/방향키 이동', 'J/마우스 공격', 'E 강공격', 'Q 부적 투척', 'C 방어/튕겨내기', 'Shift 대시', 'R 정화', 'F 전체화면'],
+      controls: ['WASD/방향키 이동', 'J/마우스 공격', 'E 강공격', 'Q 부적 투척', 'C 방어/튕겨내기', 'Shift 대시', 'R 정화', 'P 일시정지', 'F 전체화면'],
       started: this.started,
       fullscreen: this.scale.isFullscreen,
     };

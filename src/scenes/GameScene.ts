@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 
 import { audioSynth } from '../audio/AudioSynth';
-import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { configureSceneCamera, GAME_HEIGHT, GAME_WIDTH, getRenderQuality, setRenderQuality } from '../config';
 import { QaBridge, stateBridge } from '../testing/StateBridge';
 import { makeFullscreenButton, textStyle } from './sceneUi';
 
@@ -13,10 +13,10 @@ const PLAYER_RADIUS = 18;
 const DASH_SPEED = 520;
 const DASH_DURATION = 0.16;
 const DASH_COOLDOWN = 1.1;
-const ATTACK_DAMAGE = 34;
 const ATTACK_RANGE = 94;
 const ATTACK_HALF_ANGLE = Phaser.Math.DegToRad(58);
-const ATTACK_COOLDOWN = 0.32;
+const COMBO_WINDOW = 0.62;
+const COMBO_DAMAGE = [34, 40, 52] as const;
 const HEAVY_DAMAGE = 78;
 const HEAVY_RANGE = 124;
 const HEAVY_COOLDOWN = 1.15;
@@ -68,6 +68,7 @@ interface Enemy {
   motion: number;
   sprite: Phaser.GameObjects.Sprite;
   warning: Phaser.GameObjects.Arc;
+  warningLabel: Phaser.GameObjects.Text;
 }
 
 interface Projectile {
@@ -79,13 +80,20 @@ interface Projectile {
   radius: number;
   damage: number;
   life: number;
-  sprite: Phaser.GameObjects.Arc;
+  sprite: Phaser.GameObjects.Sprite;
 }
 
 interface Trail {
   x: number;
   y: number;
   life: number;
+}
+
+interface BurstEffect {
+  sprite: Phaser.GameObjects.Sprite;
+  life: number;
+  duration: number;
+  row: number;
 }
 
 interface PlayerTalisman {
@@ -95,7 +103,7 @@ interface PlayerTalisman {
   vx: number;
   vy: number;
   life: number;
-  sprite: Phaser.GameObjects.Rectangle;
+  sprite: Phaser.GameObjects.Sprite;
 }
 
 const REQUIRED_SEALS = 5;
@@ -143,7 +151,9 @@ export class GameScene extends Phaser.Scene {
 
   private sealLights: Phaser.GameObjects.Arc[] = [];
 
-  private attackGraphics!: Phaser.GameObjects.Graphics;
+  private attackFxSprite!: Phaser.GameObjects.Sprite;
+
+  private heavyFxSprite!: Phaser.GameObjects.Sprite;
 
   private worldGraphics!: Phaser.GameObjects.Graphics;
 
@@ -195,6 +205,14 @@ export class GameScene extends Phaser.Scene {
 
   private attackFxTime = 0;
 
+  private comboStep = 0;
+
+  private comboTimer = 0;
+
+  private dashAttackReady = false;
+
+  private parryCounterReady = false;
+
   private heavyCooldown = 0;
 
   private heavyFxTime = 0;
@@ -225,11 +243,17 @@ export class GameScene extends Phaser.Scene {
 
   private hitStop = 0;
 
+  private paused = false;
+
+  private pauseOverlay!: Phaser.GameObjects.Container;
+
   private enemies: Enemy[] = [];
 
   private projectiles: Projectile[] = [];
 
   private trails: Trail[] = [];
+
+  private burstEffects: BurstEffect[] = [];
 
   private playerTalismans: PlayerTalisman[] = [];
 
@@ -293,6 +317,10 @@ export class GameScene extends Phaser.Scene {
     this.talismanQueued = false;
     this.attackCooldown = 0;
     this.attackFxTime = 0;
+    this.comboStep = 0;
+    this.comboTimer = 0;
+    this.dashAttackReady = false;
+    this.parryCounterReady = false;
     this.heavyCooldown = 0;
     this.heavyFxTime = 0;
     this.talismanCooldown = 0;
@@ -308,9 +336,11 @@ export class GameScene extends Phaser.Scene {
     this.damageFlash = 0;
     this.playerMotion = 0;
     this.hitStop = 0;
+    this.paused = false;
     this.enemies = [];
     this.projectiles = [];
     this.trails = [];
+    this.burstEffects = [];
     this.playerTalismans = [];
     this.spawnQueue = [];
     this.spawnTimer = 0;
@@ -333,6 +363,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    configureSceneCamera(this);
     stateBridge.setActive(this);
 
     this.arenaBackground = this.add
@@ -354,14 +385,16 @@ export class GameScene extends Phaser.Scene {
       .setStrokeStyle(3, 0x62e6ea, 0.95)
       .setDepth(18);
     this.playerSprite = this.add
-      .sprite(this.playerX, this.playerY, 'player-warden-poses-v2', 0)
-      .setDisplaySize(98, 98)
+      .sprite(this.playerX, this.playerY, 'player-warden-motion-v3', 0)
+      .setDisplaySize(90, 120)
       .setDepth(20);
 
-    this.attackGraphics = this.add.graphics().setDepth(28);
+    this.attackFxSprite = this.add.sprite(this.playerX, this.playerY, 'combat-vfx-v1', 0).setVisible(false).setDepth(28);
+    this.heavyFxSprite = this.add.sprite(this.playerX, this.playerY, 'combat-vfx-v1', 4).setVisible(false).setDepth(27);
     this.worldGraphics = this.add.graphics().setDepth(29);
 
     this.createHud();
+    this.createPauseOverlay();
     this.createInput();
     this.startWave(0);
     this.installQaBridge();
@@ -414,6 +447,15 @@ export class GameScene extends Phaser.Scene {
         parryWindow: this.guardParryWindow > 0,
         invulnerable: this.invulnerable > 0,
         animation: this.getPlayerAnimationState(),
+        comboStep: this.comboStep,
+        comboTimer: round(this.comboTimer),
+        dashAttackReady: this.dashAttackReady,
+        parryCounterReady: this.parryCounterReady,
+      },
+      paused: this.paused,
+      settings: {
+        volume: audioSynth.getVolume(),
+        quality: getRenderQuality(),
       },
       wave: {
         index: this.waveIndex + 1,
@@ -441,6 +483,7 @@ export class GameScene extends Phaser.Scene {
         maxHp: enemy.maxHp,
         state: enemy.windup > 0 ? 'windup' : ['wisp', 'reaper'].includes(enemy.type) ? 'ranged' : 'chase',
         animation: this.getEnemyAnimationState(enemy),
+        warningRadius: enemy.windup > 0 ? enemy.radius + PLAYER_RADIUS + 20 : 0,
       })),
       projectiles: this.projectiles.map((projectile) => ({
         id: projectile.id,
@@ -448,6 +491,7 @@ export class GameScene extends Phaser.Scene {
         y: round(projectile.y),
         vx: round(projectile.vx),
         vy: round(projectile.vy),
+        frame: Number(projectile.sprite.frame.name),
       })),
       playerTalismans: this.playerTalismans.map((talisman) => ({
         id: talisman.id,
@@ -455,7 +499,15 @@ export class GameScene extends Phaser.Scene {
         y: round(talisman.y),
         vx: round(talisman.vx),
         vy: round(talisman.vy),
+        frame: Number(talisman.sprite.frame.name),
       })),
+      combatVfx: {
+        attackVisible: this.attackFxSprite?.visible ?? false,
+        attackFrame: this.attackFxSprite ? Number(this.attackFxSprite.frame.name) : -1,
+        heavyVisible: this.heavyFxSprite?.visible ?? false,
+        heavyFrame: this.heavyFxSprite ? Number(this.heavyFxSprite.frame.name) : -1,
+        bursts: this.burstEffects.length,
+      },
       kills: this.kills,
       elapsedSeconds: round(this.elapsedSeconds),
       fullscreen: this.scale.isFullscreen,
@@ -469,7 +521,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private simulate(delta: number): void {
-    if (this.ended) return;
+    if (this.ended || this.paused) {
+      this.renderVisuals();
+      return;
+    }
 
     if (this.dashQueued) this.dashBuffer = INPUT_BUFFER;
     if (this.heavyQueued) this.heavyBuffer = INPUT_BUFFER;
@@ -488,6 +543,8 @@ export class GameScene extends Phaser.Scene {
 
     this.elapsedSeconds += delta;
     this.attackCooldown = Math.max(0, this.attackCooldown - delta);
+    this.comboTimer = Math.max(0, this.comboTimer - delta);
+    if (this.comboTimer === 0) this.comboStep = 0;
     this.heavyCooldown = Math.max(0, this.heavyCooldown - delta);
     this.heavyFxTime = Math.max(0, this.heavyFxTime - delta);
     this.talismanCooldown = Math.max(0, this.talismanCooldown - delta);
@@ -528,6 +585,7 @@ export class GameScene extends Phaser.Scene {
     this.updatePurification(delta);
     if (this.ended) return;
     this.updateTrails(delta);
+    this.updateBurstEffects(delta);
     this.checkWaveCleared();
     this.renderVisuals();
   }
@@ -626,11 +684,29 @@ export class GameScene extends Phaser.Scene {
     makeFullscreenButton(this, this.fullscreenStatus);
   }
 
+  private createPauseOverlay(): void {
+    const shade = this.add.rectangle(640, 360, GAME_WIDTH, GAME_HEIGHT, 0x020713, 0.78);
+    const plate = this.add.rectangle(640, 360, 520, 320, 0x071426, 0.96).setStrokeStyle(2, 0xd8c477, 0.72);
+    const title = this.add.text(640, 250, '일시정지', { ...textStyle, fontSize: '34px', fontStyle: 'bold', color: '#ffe7a0' }).setOrigin(0.5);
+    const help = this.add.text(640, 326, '', { ...textStyle, fontSize: '19px', align: 'center', lineSpacing: 14 }).setOrigin(0.5);
+    const footer = this.add.text(640, 456, 'P 계속하기 · V 음량 · G 화질', { ...textStyle, fontSize: '16px', color: '#9ee9e4' }).setOrigin(0.5);
+    this.pauseOverlay = this.add.container(0, 0, [shade, plate, title, help, footer]).setDepth(2000).setVisible(false);
+    this.pauseOverlay.setData('help', help);
+  }
+
+  private refreshPauseOverlay(): void {
+    const help = this.pauseOverlay.getData('help') as Phaser.GameObjects.Text;
+    const volumeLabel = audioSynth.getVolume() > 0 ? '켜짐' : '꺼짐';
+    const qualityLabel = getRenderQuality() === 'high' ? '고화질 1080p' : '성능 720p';
+    help.setText(`음량 ${volumeLabel}\n화질 ${qualityLabel}\n\n공격 J · 강공격 E · 부적 Q · 방어 C · 대시 Shift`);
+    this.pauseOverlay.setVisible(this.paused);
+  }
+
   private createInput(): void {
     const keyboard = this.input.keyboard;
     if (!keyboard) throw new Error('Keyboard input is unavailable.');
 
-    keyboard.addCapture('W,A,S,D,UP,DOWN,LEFT,RIGHT,J,Q,C,R,SPACE,SHIFT,E,F');
+    keyboard.addCapture('W,A,S,D,UP,DOWN,LEFT,RIGHT,J,Q,C,R,SPACE,SHIFT,E,F,P,V,G');
     this.keys = keyboard.addKeys({
       upW: Phaser.Input.Keyboard.KeyCodes.W,
       downS: Phaser.Input.Keyboard.KeyCodes.S,
@@ -650,6 +726,9 @@ export class GameScene extends Phaser.Scene {
     keyboard.on('keydown-E', this.queueHeavyAttack, this);
     keyboard.on('keydown-Q', this.queueTalisman, this);
     keyboard.on('keydown-F', this.toggleFullscreen, this);
+    keyboard.on('keydown-P', this.togglePause, this);
+    keyboard.on('keydown-V', this.toggleVolume, this);
+    keyboard.on('keydown-G', this.toggleQuality, this);
 
     this.input.on('pointermove', this.updatePointerFacing, this);
     this.input.on('pointerdown', this.handlePointerDown, this);
@@ -657,18 +736,22 @@ export class GameScene extends Phaser.Scene {
   }
 
   private queueAttack(): void {
+    if (this.paused) return;
     this.attackQueued = true;
   }
 
   private queueDash(): void {
+    if (this.paused) return;
     this.dashQueued = true;
   }
 
   private queueHeavyAttack(): void {
+    if (this.paused) return;
     this.heavyQueued = true;
   }
 
   private queueTalisman(): void {
+    if (this.paused) return;
     this.talismanQueued = true;
   }
 
@@ -743,6 +826,7 @@ export class GameScene extends Phaser.Scene {
     this.dashY /= length;
     this.dashRemaining = DASH_DURATION;
     this.dashCooldown = DASH_COOLDOWN;
+    this.dashAttackReady = true;
     this.invulnerable = Math.max(this.invulnerable, DASH_DURATION);
     audioSynth.tone(205, 0.12, 'sawtooth', 0.025);
     return true;
@@ -761,20 +845,32 @@ export class GameScene extends Phaser.Scene {
 
   private tryAttack(): boolean {
     if (this.attackCooldown > 0 || this.dashRemaining > 0 || this.heavyFxTime > 0 || this.guardFxTime > 0) return false;
-    this.attackCooldown = ATTACK_COOLDOWN;
+    const isCounter = this.parryCounterReady;
+    const isDashAttack = this.dashAttackReady;
+    const nextCombo = this.comboTimer > 0 ? (this.comboStep % 3) + 1 : 1;
+    this.comboStep = nextCombo;
+    this.comboTimer = COMBO_WINDOW;
+    this.parryCounterReady = false;
+    this.dashAttackReady = false;
+    const damage = isCounter ? 76 : isDashAttack ? 58 : COMBO_DAMAGE[nextCombo - 1];
+    const range = isCounter ? 126 : isDashAttack ? 116 : ATTACK_RANGE + (nextCombo - 1) * 8;
+    const halfAngle = isCounter ? Phaser.Math.DegToRad(80) : ATTACK_HALF_ANGLE + Phaser.Math.DegToRad((nextCombo - 1) * 7);
+    this.attackCooldown = isCounter ? 0.26 : nextCombo === 3 ? 0.38 : 0.32;
     this.attackFxTime = 0.12;
-    audioSynth.tone(310, 0.085, 'triangle', 0.028);
+    audioSynth.tone(isCounter ? 660 : 290 + nextCombo * 55, 0.085, 'triangle', isCounter ? 0.04 : 0.028);
 
-    const cosineThreshold = Math.cos(ATTACK_HALF_ANGLE);
+    const cosineThreshold = Math.cos(halfAngle);
     for (const enemy of [...this.enemies]) {
       const dx = enemy.x - this.playerX;
       const dy = enemy.y - this.playerY;
       const distance = Math.hypot(dx, dy);
-      if (distance > ATTACK_RANGE + enemy.radius || distance < 0.001) continue;
+      if (distance > range + enemy.radius || distance < 0.001) continue;
       const dot = (dx / distance) * this.facingX + (dy / distance) * this.facingY;
       if (dot < cosineThreshold) continue;
-      this.damageEnemy(enemy, ATTACK_DAMAGE, dx / distance, dy / distance);
+      this.damageEnemy(enemy, damage, dx / distance, dy / distance);
     }
+    if (isCounter) this.showMessage('반격!', 0.45);
+    else if (isDashAttack) this.showMessage('대시 베기', 0.38);
     return true;
   }
 
@@ -802,8 +898,8 @@ export class GameScene extends Phaser.Scene {
     this.talismanFxTime = 0.28;
     const aim = this.getAssistedAim();
     const sprite = this.add
-      .rectangle(this.playerX, this.playerY, 24, 11, 0xffe38b, 1)
-      .setStrokeStyle(2, 0xff7c48, 0.95)
+      .sprite(this.playerX, this.playerY, 'combat-vfx-v1', 8)
+      .setDisplaySize(68, 46)
       .setRotation(Math.atan2(aim.y, aim.x))
       .setDepth(27);
     this.playerTalismans.push({
@@ -848,7 +944,14 @@ export class GameScene extends Phaser.Scene {
       talisman.x += talisman.vx * delta;
       talisman.y += talisman.vy * delta;
       talisman.life -= delta;
-      talisman.sprite.setPosition(talisman.x, talisman.y).setRotation(talisman.sprite.rotation + delta * 5);
+      const talismanPhase = Math.floor((1.4 - talisman.life) * 14) % 4;
+      const travelAngle = Math.atan2(talisman.vy, talisman.vx);
+      const talismanPulse = 1 + Math.sin((1.4 - talisman.life) * 28) * 0.06;
+      talisman.sprite
+        .setFrame(8 + talismanPhase)
+        .setPosition(talisman.x, talisman.y)
+        .setRotation(travelAngle)
+        .setDisplaySize(68 * talismanPulse, 46 * talismanPulse);
       const enemy = this.enemies.find((candidate) => Math.hypot(candidate.x - talisman.x, candidate.y - talisman.y) <= candidate.radius + 10);
       if (enemy) {
         const speed = Math.hypot(talisman.vx, talisman.vy) || 1;
@@ -879,7 +982,28 @@ export class GameScene extends Phaser.Scene {
     audioSynth.tone(['wisp', 'reaper'].includes(enemy.type) ? 720 : 120, 0.07, 'square', 0.018);
     this.hitStop = Math.max(this.hitStop, damage >= HEAVY_DAMAGE ? 0.075 : 0.035);
     this.cameras.main.shake(damage >= HEAVY_DAMAGE ? 90 : 45, damage >= HEAVY_DAMAGE ? 0.006 : 0.0025);
-    if (enemy.hp <= 0) this.destroyEnemy(enemy, true);
+    this.spawnBurstEffect(enemy.x, enemy.y, 0, damage >= HEAVY_DAMAGE ? 104 : 72, 0.2);
+    if (enemy.hp <= 0) {
+      this.spawnBurstEffect(enemy.x, enemy.y, 3, isBoss(enemy.type) ? 156 : 110, 0.34);
+      this.destroyEnemy(enemy, true);
+    }
+  }
+
+  private spawnBurstEffect(x: number, y: number, row: number, size: number, duration: number): void {
+    const sprite = this.add.sprite(x, y, 'combat-vfx-v1', row * 4).setDisplaySize(size, size * 0.72).setDepth(31);
+    this.burstEffects.push({ sprite, life: duration, duration, row });
+  }
+
+  private updateBurstEffects(delta: number): void {
+    for (const effect of [...this.burstEffects]) {
+      effect.life -= delta;
+      const progress = Phaser.Math.Clamp(1 - effect.life / effect.duration, 0, 0.999);
+      effect.sprite.setFrame(effect.row * 4 + Math.floor(progress * 4)).setAlpha(1 - progress * 0.35);
+      if (effect.life <= 0) {
+        effect.sprite.destroy();
+        this.burstEffects.splice(this.burstEffects.indexOf(effect), 1);
+      }
+    }
   }
 
   private updateWave(delta: number): void {
@@ -931,11 +1055,24 @@ export class GameScene extends Phaser.Scene {
     const x = forcedX ?? point.x;
     const y = forcedY ?? point.y;
 
+    const warningRadius = radius + PLAYER_RADIUS + 20;
     const warning = this.add
-      .circle(x, y + 18, radius + 12, 0x9e252b, 0.08)
+      .circle(x, y + 18, warningRadius, 0x9e252b, 0.08)
       .setStrokeStyle(3, 0xff5b55, 0.8)
       .setVisible(false)
       .setDepth(8);
+    const warningLabel = this.add
+      .text(x, y - warningRadius - 18, isBoss(type) ? '위험 · 요괴 강습' : '', {
+        ...textStyle,
+        fontSize: '13px',
+        fontStyle: 'bold',
+        color: '#ffaaa1',
+        backgroundColor: 'rgba(32, 4, 10, 0.78)',
+        padding: { x: 7, y: 3 },
+      })
+      .setOrigin(0.5)
+      .setVisible(false)
+      .setDepth(15);
     const sprite = this.add.sprite(x, y, texture).setDisplaySize(displaySize, displaySize).setDepth(12);
     if (type === 'boss') sprite.setTint(0xd5a64b);
     if (type === 'reaper') sprite.setTint(0xb59cff);
@@ -960,6 +1097,7 @@ export class GameScene extends Phaser.Scene {
       displaySize,
       sprite,
       warning,
+      warningLabel,
     };
     this.nextEnemyId += 1;
     this.enemies.push(enemy);
@@ -1057,9 +1195,12 @@ export class GameScene extends Phaser.Scene {
     const speed = enemy.type === 'moonlord' ? 310 : bossShot ? 285 : 250;
     const radius = bossShot ? 9 : 8;
     const sprite = this.add
-      .circle(enemy.x, enemy.y, radius, enemy.type === 'moonlord' ? 0xff6b58 : bossShot ? 0xc195ff : 0x7cecff, 0.96)
-      .setStrokeStyle(3, bossShot ? 0xffe1d2 : 0xd6fbff, 0.7)
+      .sprite(enemy.x, enemy.y, 'combat-vfx-v1', 12)
+      .setDisplaySize(bossShot ? 58 : 48, bossShot ? 42 : 34)
+      .setRotation(Math.atan2(directionY, directionX))
       .setDepth(16);
+    if (enemy.type === 'moonlord') sprite.setTint(0xff776d);
+    else if (bossShot) sprite.setTint(0xd6adff);
     this.projectiles.push({
       id: `p${this.nextProjectileId}`,
       x: enemy.x,
@@ -1080,7 +1221,14 @@ export class GameScene extends Phaser.Scene {
       projectile.x += projectile.vx * delta;
       projectile.y += projectile.vy * delta;
       projectile.life -= delta;
-      projectile.sprite.setPosition(projectile.x, projectile.y);
+      const projectilePhase = Math.floor((4 - projectile.life) * 12) % 4;
+      const projectilePulse = 1 + Math.sin((4 - projectile.life) * 25) * 0.08;
+      const projectileSize = projectile.radius > 8 ? 58 : 48;
+      projectile.sprite
+        .setFrame(12 + projectilePhase)
+        .setPosition(projectile.x, projectile.y)
+        .setRotation(Math.atan2(projectile.vy, projectile.vx))
+        .setDisplaySize(projectileSize * projectilePulse, projectileSize * 0.72 * projectilePulse);
 
       const distance = Math.hypot(projectile.x - this.playerX, projectile.y - this.playerY);
       if (distance <= projectile.radius + PLAYER_RADIUS) {
@@ -1104,8 +1252,11 @@ export class GameScene extends Phaser.Scene {
     const guarding = this.keys.guard.isDown || this.guardFxTime > 0;
     if (this.guardParryWindow > 0) {
       this.guardParryWindow = 0;
+      this.guardFxTime = 0;
       this.invulnerable = 0.24;
       this.clearNearbyProjectiles(150);
+      this.parryCounterReady = true;
+      this.comboTimer = 0.75;
       audioSynth.chord([659, 880, 1047], 0.12, 0.025);
       this.showMessage('튕겨내기!', 0.45);
       return;
@@ -1176,6 +1327,7 @@ export class GameScene extends Phaser.Scene {
     if (index < 0) return;
     enemy.sprite.destroy();
     enemy.warning.destroy();
+    enemy.warningLabel.destroy();
     this.enemies.splice(index, 1);
     if (countKill) this.kills += 1;
   }
@@ -1197,6 +1349,11 @@ export class GameScene extends Phaser.Scene {
     this.playerTalismans = [];
   }
 
+  private clearBurstEffects(): void {
+    for (const effect of this.burstEffects) effect.sprite.destroy();
+    this.burstEffects = [];
+  }
+
   private updateTrails(delta: number): void {
     for (const trail of this.trails) trail.life -= delta;
     this.trails = this.trails.filter((trail) => trail.life > 0);
@@ -1205,35 +1362,35 @@ export class GameScene extends Phaser.Scene {
   private renderVisuals(): void {
     const playerState = this.getPlayerAnimationState();
     const playerCycle = Math.sin(this.playerMotion);
-    let playerWidth = 98;
-    let playerHeight = 98;
+    let playerWidth = 90;
+    let playerHeight = 120;
     let playerBob = Math.sin(this.elapsedSeconds * 3.4) * 1.4;
     let playerAngle = 0;
     if (playerState === 'run') {
-      playerWidth = 98 + Math.abs(playerCycle) * 5;
-      playerHeight = 98 - Math.abs(playerCycle) * 4;
+      playerWidth = 94 + Math.abs(playerCycle) * 4;
+      playerHeight = 116 - Math.abs(playerCycle) * 3;
       playerBob = Math.abs(playerCycle) * -5;
       playerAngle = playerCycle * 3.5;
     } else if (playerState === 'dash') {
-      playerWidth = 118;
-      playerHeight = 78;
+      playerWidth = 120;
+      playerHeight = 94;
       playerBob = -3;
       playerAngle = this.facingX * 9;
     } else if (playerState === 'attack' || playerState === 'heavy' || playerState === 'talisman' || playerState === 'guard') {
       const slash = 1 - this.attackFxTime / 0.12;
-      playerWidth = playerState === 'heavy' ? 112 : playerState === 'guard' ? 102 : 106;
-      playerHeight = playerState === 'heavy' ? 102 : 94;
+      playerWidth = playerState === 'heavy' ? 106 : playerState === 'guard' ? 90 : 102;
+      playerHeight = playerState === 'heavy' ? 126 : 120;
       playerBob = -2;
       playerAngle = playerState === 'attack' ? (slash - 0.5) * 18 * (this.facingX < 0 ? -1 : 1) : 0;
     } else if (playerState === 'hit') {
-      playerWidth = 92;
-      playerHeight = 104;
+      playerWidth = 94;
+      playerHeight = 122;
       playerAngle = Math.sin(this.elapsedSeconds * 55) * 7;
     } else {
-      playerWidth = 98 + playerCycle * 1.8;
-      playerHeight = 98 - playerCycle * 1.8;
+      playerWidth = 90 + playerCycle * 1.2;
+      playerHeight = 120 - playerCycle * 1.2;
     }
-    const playerFrame: Record<ReturnType<GameScene['getPlayerAnimationState']>, number> = {
+    const playerColumn: Record<ReturnType<GameScene['getPlayerAnimationState']>, number> = {
       idle: 0,
       run: 1,
       attack: 2,
@@ -1243,10 +1400,12 @@ export class GameScene extends Phaser.Scene {
       dash: 6,
       hit: 7,
     };
-    this.playerSprite.setFrame(playerFrame[playerState]).setPosition(this.playerX, this.playerY + playerBob).setDisplaySize(playerWidth, playerHeight).setAngle(playerAngle);
+    const playerPhase = this.getPlayerAnimationPhase(playerState);
+    const playerFrame = playerColumn[playerState] + playerPhase * 8;
+    this.playerSprite.setFrame(playerFrame).setPosition(this.playerX, this.playerY + playerBob).setDisplaySize(playerWidth, playerHeight).setAngle(playerAngle);
     this.playerSprite.setFlipX(this.facingX < -0.08);
     this.playerSprite.setAlpha(this.damageFlash > 0 ? 0.5 : 1);
-    this.playerShadow.setPosition(this.playerX, this.playerY + 25);
+    this.playerShadow.setPosition(this.playerX, this.playerY + 38);
     this.dashRing
       .setPosition(this.playerX, this.playerY + 22)
       .setStrokeStyle(3, this.dashCooldown <= 0 ? 0x65f0e8 : 0x536275, this.dashCooldown <= 0 ? 0.92 : 0.42);
@@ -1321,6 +1480,9 @@ export class GameScene extends Phaser.Scene {
       enemy.sprite.setFrame(enemyFrame).setPosition(enemy.x, enemy.y + enemyBob).setDisplaySize(width, height).setAngle(angle);
       enemy.sprite.setFlipX(this.playerX > enemy.x);
       enemy.warning.setPosition(enemy.x, enemy.y + 16).setVisible(enemy.windup > 0);
+      enemy.warningLabel
+        .setPosition(enemy.x, enemy.y - enemy.radius - PLAYER_RADIUS - 22)
+        .setVisible(isBoss(enemy.type) && enemy.windup > 0);
       if (enemy.hitFlash > 0) enemy.sprite.setTint(0xfff2bd);
       else if (enemy.type === 'boss') enemy.sprite.setTint(0xd5a64b);
       else if (enemy.type === 'reaper') enemy.sprite.setTint(0xb59cff);
@@ -1355,28 +1517,53 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    this.drawAttackFan();
+    this.updateCombatVfxSprites();
     this.updateHud();
   }
 
-  private drawAttackFan(): void {
-    this.attackGraphics.clear();
-    if (this.attackFxTime <= 0) return;
+  private togglePause(): void {
+    if (this.ended) return;
+    this.paused = !this.paused;
+    this.refreshPauseOverlay();
+  }
+
+  private toggleVolume(): void {
+    audioSynth.setVolume(audioSynth.getVolume() > 0 ? 0 : 1);
+    if (this.paused) this.refreshPauseOverlay();
+  }
+
+  private toggleQuality(): void {
+    setRenderQuality(this, getRenderQuality() === 'high' ? 'performance' : 'high');
+    if (this.paused) this.refreshPauseOverlay();
+  }
+
+  private updateCombatVfxSprites(): void {
     const baseAngle = Math.atan2(this.facingY, this.facingX);
-    const points = [new Phaser.Math.Vector2(this.playerX, this.playerY)];
-    const segments = 14;
-    for (let index = 0; index <= segments; index += 1) {
-      const angle = baseAngle - ATTACK_HALF_ANGLE + (ATTACK_HALF_ANGLE * 2 * index) / segments;
-      points.push(
-        new Phaser.Math.Vector2(
-          this.playerX + Math.cos(angle) * ATTACK_RANGE,
-          this.playerY + Math.sin(angle) * ATTACK_RANGE,
-        ),
-      );
+    if (this.attackFxTime > 0) {
+      const progress = Phaser.Math.Clamp(1 - this.attackFxTime / 0.12, 0, 0.999);
+      const frame = Math.floor(progress * 4);
+      this.attackFxSprite
+        .setVisible(true)
+        .setFrame(frame)
+        .setPosition(this.playerX + this.facingX * 42, this.playerY + this.facingY * 42)
+        .setRotation(baseAngle)
+        .setDisplaySize(ATTACK_RANGE * 2.05, ATTACK_RANGE * 1.45)
+        .setAlpha(1 - progress * 0.25);
+    } else {
+      this.attackFxSprite.setVisible(false);
     }
-    const alpha = Phaser.Math.Clamp(this.attackFxTime / 0.12, 0, 1);
-    this.attackGraphics.fillStyle(0xffe8a1, 0.25 * alpha).fillPoints(points, true);
-    this.attackGraphics.lineStyle(5, 0xfff2be, 0.8 * alpha).strokePoints(points.slice(1), false);
+
+    if (this.heavyFxTime > 0) {
+      const progress = Phaser.Math.Clamp(1 - this.heavyFxTime / 0.32, 0, 0.999);
+      this.heavyFxSprite
+        .setVisible(true)
+        .setFrame(4 + Math.floor(progress * 4))
+        .setPosition(this.playerX, this.playerY + 18)
+        .setDisplaySize(HEAVY_RANGE * 2.35, HEAVY_RANGE * 1.55)
+        .setAlpha(1 - progress * 0.18);
+    } else {
+      this.heavyFxSprite.setVisible(false);
+    }
   }
 
   private updateHud(): void {
@@ -1438,6 +1625,20 @@ export class GameScene extends Phaser.Scene {
       this.keys?.right.isDown
     ) return 'run';
     return 'idle';
+  }
+
+  private getPlayerAnimationPhase(state: ReturnType<GameScene['getPlayerAnimationState']>): number {
+    const phaseFromProgress = (progress: number): number =>
+      Phaser.Math.Clamp(Math.floor(progress * 4), 0, 3);
+
+    if (state === 'run') return Math.floor(this.playerMotion * 0.9) % 4;
+    if (state === 'attack') return phaseFromProgress(1 - this.attackFxTime / 0.12);
+    if (state === 'heavy') return phaseFromProgress(1 - this.heavyFxTime / 0.32);
+    if (state === 'talisman') return phaseFromProgress(1 - this.talismanFxTime / 0.28);
+    if (state === 'dash') return phaseFromProgress(1 - this.dashRemaining / DASH_DURATION);
+    if (state === 'hit') return phaseFromProgress(1 - this.damageFlash / 0.16);
+    if (state === 'guard') return Math.floor(this.elapsedSeconds * 5) % 4;
+    return Math.floor(this.elapsedSeconds * 4) % 4;
   }
 
   private getEnemyAnimationState(enemy: Enemy): 'walk' | 'hover' | 'windup' | 'cast' | 'hit' {
@@ -1503,6 +1704,9 @@ export class GameScene extends Phaser.Scene {
         this.pushOutOfAltar();
         this.renderVisuals();
       },
+      playerFrame: () => Number(this.playerSprite.frame.name),
+      toggleVolume: () => this.toggleVolume(),
+      toggleQuality: () => this.toggleQuality(),
     };
     window.__WOLHA_QA__ = qa;
   }
@@ -1524,11 +1728,15 @@ export class GameScene extends Phaser.Scene {
     keyboard?.off('keydown-E', this.queueHeavyAttack, this);
     keyboard?.off('keydown-Q', this.queueTalisman, this);
     keyboard?.off('keydown-F', this.toggleFullscreen, this);
+    keyboard?.off('keydown-P', this.togglePause, this);
+    keyboard?.off('keydown-V', this.toggleVolume, this);
+    keyboard?.off('keydown-G', this.toggleQuality, this);
     this.input.off('pointermove', this.updatePointerFacing, this);
     this.input.off('pointerdown', this.handlePointerDown, this);
     this.game.canvas.removeEventListener('contextmenu', this.contextMenuHandler);
     this.clearProjectiles();
     this.clearPlayerTalismans();
+    this.clearBurstEffects();
     stateBridge.clear(this);
     delete window.__WOLHA_QA__;
   }

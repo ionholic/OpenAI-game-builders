@@ -14,7 +14,7 @@ def prepare_background(source_name: str, output_name: str) -> None:
     image = Image.open(SOURCE / source_name).convert("RGB")
     fitted = ImageOps.fit(
         image,
-        (1280, 720),
+        (1920, 1080),
         method=Image.Resampling.LANCZOS,
         centering=(0.5, 0.5),
     )

@@ -15,6 +15,9 @@ export interface QaBridge {
     hp?: number,
   ): string;
   setPlayerPosition(x: number, y: number): void;
+  playerFrame(): number;
+  toggleVolume(): void;
+  toggleQuality(): void;
 }
 
 declare global {

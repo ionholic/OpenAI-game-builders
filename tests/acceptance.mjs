@@ -53,8 +53,19 @@ async function runDeterministicAcceptance(browser, errors) {
 
   await page.goto(`${BASE_URL}/?qa=1`, { waitUntil: 'networkidle' });
   await waitForMode(page, 'title');
+  const canvasResolution = await page.locator('canvas').evaluate((canvas) => ({
+    width: canvas.width,
+    height: canvas.height,
+    cssWidth: canvas.getBoundingClientRect().width,
+    cssHeight: canvas.getBoundingClientRect().height,
+  }));
+  assert(
+    canvasResolution.width === 1920 && canvasResolution.height === 1080,
+    'QA-25 game renders internally at full HD while fitting the browser viewport',
+    canvasResolution,
+  );
   const titleState = await state(page);
-  assert(titleState.mode === 'title' && titleState.controls.length === 8, 'QA-01 title presents objective and expanded controls', titleState);
+  assert(titleState.mode === 'title' && titleState.controls.length === 9, 'QA-01 title presents objective and expanded controls', titleState);
   await captureCanvas(page, '01-title.png');
 
   const canvasBox = await page.locator('canvas').boundingBox();
@@ -93,13 +104,38 @@ async function runDeterministicAcceptance(browser, errors) {
     current,
   );
 
+  const elapsedBeforePause = current.elapsedSeconds;
+  await page.keyboard.press('p');
+  await advance(page, 800);
+  current = await state(page);
+  assert(current.paused && Math.abs(current.elapsedSeconds - elapsedBeforePause) <= 0.02, 'QA-29 P pauses simulation time and displays settings', current);
+  await page.evaluate(() => {
+    window.__WOLHA_QA__.toggleVolume();
+    window.__WOLHA_QA__.toggleQuality();
+  });
+  current = await state(page);
+  const performanceCanvas = await page.locator('canvas').evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
+  assert(current.settings.volume === 0 && current.settings.quality === 'performance' && performanceCanvas.width === 1280 && performanceCanvas.height === 720, 'QA-30 pause menu toggles mute and 720p performance rendering', { current, performanceCanvas });
+  await page.evaluate(() => {
+    window.__WOLHA_QA__.toggleVolume();
+    window.__WOLHA_QA__.toggleQuality();
+  });
+  await page.keyboard.press('p');
+  current = await state(page);
+  const highCanvas = await page.locator('canvas').evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
+  assert(!current.paused && current.settings.volume === 1 && current.settings.quality === 'high' && highCanvas.width === 1920 && highCanvas.height === 1080, 'QA-30 settings restore audio, 1080p rendering, and active play', { current, highCanvas });
+
   const startX = current.player.x;
   await page.keyboard.down('ArrowRight');
   await advance(page, 250);
   current = await state(page);
   assert(current.player.animation === 'run', 'QA-19 movement input selects the run sprite motion', current.player);
+  const runFrameA = await page.evaluate(() => window.__WOLHA_QA__.playerFrame());
+  await advance(page, 120);
+  const runFrameB = await page.evaluate(() => window.__WOLHA_QA__.playerFrame());
+  assert(runFrameA !== runFrameB, 'QA-26 run animation advances through distinct sprite-sheet frames', { runFrameA, runFrameB });
   await captureCanvas(page, '02-player-run.png');
-  await advance(page, 250);
+  await advance(page, 130);
   await page.keyboard.up('ArrowRight');
   current = await state(page);
   assert(current.player.x > startX + 90, 'QA-03 arrow-key movement advances the player', { startX, endX: current.player.x });
@@ -137,6 +173,8 @@ async function runDeterministicAcceptance(browser, errors) {
   await advance(page, 1000 / 60);
   current = await state(page);
   assert(current.player.animation === 'attack' && current.enemies[0]?.hp === 34, 'QA-04 melee selects the attack sprite motion and deals exactly one 34-damage hit', current);
+  assert(current.combatVfx.attackVisible && current.combatVfx.attackFrame >= 0 && current.combatVfx.attackFrame <= 3, 'QA-27 melee uses the animated slash effect sheet', current.combatVfx);
+  assert(current.player.comboStep === 1 && current.combatVfx.bursts > 0, 'QA-31 first combo strike starts the chain and creates a hit burst', current);
   await captureCanvas(page, '03-player-attack.png');
   await page.keyboard.press('KeyJ');
   await advance(page, 120);
@@ -148,6 +186,22 @@ async function runDeterministicAcceptance(browser, errors) {
   current = await state(page);
   assert(current.enemies.length === 0 && current.altar.active, 'QA-08 final enemy death activates the altar', current);
 
+  await advance(page, 800);
+  await page.evaluate(() => {
+    window.__WOLHA_QA__.clearWave();
+    window.__WOLHA_QA__.setPlayerPosition(500, 500);
+    window.__WOLHA_QA__.placeEnemy('bulgasari', 585, 500, 180);
+  });
+  await holdAndAdvance(page, 'ArrowRight', 1000 / 60);
+  for (const expectedStep of [1, 2, 3]) {
+    await page.keyboard.press('KeyJ');
+    await advance(page, 1000 / 60);
+    current = await state(page);
+    assert(current.player.comboStep === expectedStep, `QA-32 combo advances to strike ${expectedStep}`, current.player);
+    if (expectedStep < 3) await advance(page, 400);
+  }
+  assert(current.enemies[0]?.hp === 54, 'QA-32 three-hit combo deals 34, 40, and 52 damage', current.enemies[0] ?? {});
+
   await page.evaluate(() => {
     window.__WOLHA_QA__.clearWave();
     window.__WOLHA_QA__.setPlayerPosition(500, 500);
@@ -158,6 +212,7 @@ async function runDeterministicAcceptance(browser, errors) {
   await advance(page, 100);
   current = await state(page);
   assert(current.player.animation === 'heavy' && current.enemies[0]?.hp === 72 && current.player.heavyCooldown > 1, 'QA-20 E heavy attack uses its unique pose, deals 78 damage, and starts cooldown', current);
+  assert(current.combatVfx.heavyVisible && current.combatVfx.heavyFrame >= 4 && current.combatVfx.heavyFrame <= 7, 'QA-27 heavy attack uses the animated ground-impact effect sheet', current.combatVfx);
   await captureCanvas(page, '04-heavy-attack.png');
   await advance(page, 1050);
   await page.keyboard.press('KeyE');
@@ -179,8 +234,12 @@ async function runDeterministicAcceptance(browser, errors) {
   await advance(page, 1000 / 60);
   current = await state(page);
   assert(current.player.animation === 'talisman' && current.playerTalismans.length === 1, 'QA-21 Q throws a visible talisman using its unique pose', current);
+  const talismanFrameA = current.playerTalismans[0].frame;
+  await advance(page, 100);
+  current = await state(page);
+  assert(current.playerTalismans[0]?.frame !== talismanFrameA, 'QA-28 talisman projectile cycles through sprite-sheet frames while flying', { talismanFrameA, current: current.playerTalismans[0] });
   await captureCanvas(page, '05-talisman-throw.png');
-  await advance(page, 700);
+  await advance(page, 600);
   current = await state(page);
   assert(current.enemies[0]?.hp === 20 && current.playerTalismans.length === 0, 'QA-21 talisman travels, hits once for 48 damage, and disappears', current);
 
@@ -192,7 +251,18 @@ async function runDeterministicAcceptance(browser, errors) {
   await page.evaluate(() => window.__WOLHA_QA__.damagePlayer(20));
   current = await state(page);
   assert(current.player.hp === hpBeforeGuard, 'QA-22 timed parry negates incoming damage', { hpBeforeGuard, player: current.player });
+  assert(current.player.parryCounterReady, 'QA-33 perfect guard arms an immediate counterattack', current.player);
   await captureCanvas(page, '06-guard-parry.png');
+  await page.keyboard.up('KeyC');
+  await page.evaluate(() => {
+    window.__WOLHA_QA__.clearWave();
+    window.__WOLHA_QA__.placeEnemy('bulgasari', 385, 500, 100);
+  });
+  await page.keyboard.press('KeyJ');
+  await advance(page, 1000 / 60);
+  current = await state(page);
+  assert(!current.player.parryCounterReady && current.enemies[0]?.hp === 24, 'QA-33 armed counterattack deals 76 damage and consumes the counter state', current);
+  await page.keyboard.down('KeyC');
   await advance(page, 250);
   await page.evaluate(() => window.__WOLHA_QA__.damagePlayer(20));
   current = await state(page);
@@ -213,6 +283,13 @@ async function runDeterministicAcceptance(browser, errors) {
   current = await state(page);
   const dashDistance = current.player.x - dashStart;
   assert(dashDistance >= 75 && dashDistance <= 95 && current.player.dashCooldown > 0.8, 'QA-05 dash covers the intended distance and starts cooldown', { dashDistance, cooldown: current.player.dashCooldown });
+  assert(current.player.dashAttackReady, 'QA-34 dash arms a stronger follow-up slash', current.player);
+  await page.evaluate(() => window.__WOLHA_QA__.placeEnemy('bulgasari', 485, 500, 100));
+  await page.keyboard.press('KeyJ');
+  await advance(page, 1000 / 60);
+  current = await state(page);
+  assert(!current.player.dashAttackReady && current.enemies[0]?.hp === 42, 'QA-34 dash slash deals 58 damage and consumes its ready state', current);
+  await page.evaluate(() => window.__WOLHA_QA__.clearWave());
   const blockedDashStart = current.player.x;
   await page.keyboard.press('ShiftLeft');
   await advance(page, 180);
@@ -317,7 +394,8 @@ async function runDeterministicAcceptance(browser, errors) {
       current.enemies.some((enemy) => enemy.type === 'reaper') &&
       current.enemies.some((enemy) => enemy.type === 'moonlord') &&
       current.enemies.some((enemy) => ['walk', 'hover', 'cast', 'windup'].includes(enemy.animation)) &&
-      current.projectiles.length > 0,
+      current.projectiles.length > 0 &&
+      current.projectiles.every((projectile) => projectile.frame >= 12 && projectile.frame <= 15),
     'QA-07 new monsters, bosses, and live projectiles coexist correctly',
     current,
   );
