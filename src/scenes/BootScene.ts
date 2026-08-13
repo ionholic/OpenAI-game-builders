@@ -38,8 +38,8 @@ export class BootScene extends Phaser.Scene {
     this.load.image('altar', asset('altar.png'));
     this.load.spritesheet('player-warden-sheet', asset('player-warden-sheet.png'), { frameWidth: 512, frameHeight: 512 });
     this.load.spritesheet('player-warden-poses-v2', asset('player-warden-poses-v2.png'), { frameWidth: 384, frameHeight: 512 });
-    this.load.spritesheet('player-warden-motion-v3', asset('player-warden-motion-v3.png'), { frameWidth: 192, frameHeight: 256 });
-    this.load.spritesheet('combat-vfx-v1', asset('combat-vfx-v1-refined.png'), { frameWidth: 384, frameHeight: 256 });
+    this.load.spritesheet('player-warden-motion-v3', asset('player-warden-motion-v4-normalized.png'), { frameWidth: 224, frameHeight: 256 });
+    this.load.spritesheet('combat-vfx-v1', asset('combat-vfx-v2-normalized.png'), { frameWidth: 384, frameHeight: 256 });
     this.load.spritesheet('enemy-dokkaebi-sheet', asset('enemy-dokkaebi-sheet.png'), { frameWidth: 512, frameHeight: 512 });
     this.load.spritesheet('enemy-wisp-sheet', asset('enemy-wisp-sheet.png'), { frameWidth: 512, frameHeight: 512 });
     this.load.spritesheet('enemy-gwishin-sheet', asset('enemy-gwishin-sheet.png'), { frameWidth: 512, frameHeight: 512 });

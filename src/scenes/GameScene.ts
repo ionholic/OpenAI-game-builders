@@ -13,6 +13,7 @@ const PLAYER_RADIUS = 18;
 const DASH_SPEED = 520;
 const DASH_DURATION = 0.16;
 const DASH_COOLDOWN = 1.1;
+const DASH_ATTACK_WINDOW = 0.72;
 const ATTACK_RANGE = 94;
 const ATTACK_HALF_ANGLE = Phaser.Math.DegToRad(58);
 const COMBO_WINDOW = 0.62;
@@ -23,6 +24,7 @@ const HEAVY_COOLDOWN = 1.15;
 const TALISMAN_DAMAGE = 48;
 const TALISMAN_COOLDOWN = 1.35;
 const GUARD_COOLDOWN = 0.75;
+const COUNTER_ATTACK_WINDOW = 0.75;
 const INPUT_BUFFER = 0.14;
 const ARENA_BOUNDS = { left: 105, right: 1175, top: 112, bottom: 650 };
 const ALTAR = { x: 640, y: 360, interactRadius: 94, collisionRadius: 64 };
@@ -211,7 +213,11 @@ export class GameScene extends Phaser.Scene {
 
   private dashAttackReady = false;
 
+  private dashAttackTimer = 0;
+
   private parryCounterReady = false;
+
+  private parryCounterTimer = 0;
 
   private heavyCooldown = 0;
 
@@ -320,7 +326,9 @@ export class GameScene extends Phaser.Scene {
     this.comboStep = 0;
     this.comboTimer = 0;
     this.dashAttackReady = false;
+    this.dashAttackTimer = 0;
     this.parryCounterReady = false;
+    this.parryCounterTimer = 0;
     this.heavyCooldown = 0;
     this.heavyFxTime = 0;
     this.talismanCooldown = 0;
@@ -450,7 +458,9 @@ export class GameScene extends Phaser.Scene {
         comboStep: this.comboStep,
         comboTimer: round(this.comboTimer),
         dashAttackReady: this.dashAttackReady,
+        dashAttackTimer: round(this.dashAttackTimer),
         parryCounterReady: this.parryCounterReady,
+        parryCounterTimer: round(this.parryCounterTimer),
       },
       paused: this.paused,
       settings: {
@@ -545,6 +555,10 @@ export class GameScene extends Phaser.Scene {
     this.attackCooldown = Math.max(0, this.attackCooldown - delta);
     this.comboTimer = Math.max(0, this.comboTimer - delta);
     if (this.comboTimer === 0) this.comboStep = 0;
+    this.dashAttackTimer = Math.max(0, this.dashAttackTimer - delta);
+    if (this.dashAttackTimer === 0) this.dashAttackReady = false;
+    this.parryCounterTimer = Math.max(0, this.parryCounterTimer - delta);
+    if (this.parryCounterTimer === 0) this.parryCounterReady = false;
     this.heavyCooldown = Math.max(0, this.heavyCooldown - delta);
     this.heavyFxTime = Math.max(0, this.heavyFxTime - delta);
     this.talismanCooldown = Math.max(0, this.talismanCooldown - delta);
@@ -827,6 +841,7 @@ export class GameScene extends Phaser.Scene {
     this.dashRemaining = DASH_DURATION;
     this.dashCooldown = DASH_COOLDOWN;
     this.dashAttackReady = true;
+    this.dashAttackTimer = DASH_ATTACK_WINDOW;
     this.invulnerable = Math.max(this.invulnerable, DASH_DURATION);
     audioSynth.tone(205, 0.12, 'sawtooth', 0.025);
     return true;
@@ -851,7 +866,9 @@ export class GameScene extends Phaser.Scene {
     this.comboStep = nextCombo;
     this.comboTimer = COMBO_WINDOW;
     this.parryCounterReady = false;
+    this.parryCounterTimer = 0;
     this.dashAttackReady = false;
+    this.dashAttackTimer = 0;
     const damage = isCounter ? 76 : isDashAttack ? 58 : COMBO_DAMAGE[nextCombo - 1];
     const range = isCounter ? 126 : isDashAttack ? 116 : ATTACK_RANGE + (nextCombo - 1) * 8;
     const halfAngle = isCounter ? Phaser.Math.DegToRad(80) : ATTACK_HALF_ANGLE + Phaser.Math.DegToRad((nextCombo - 1) * 7);
@@ -1256,7 +1273,8 @@ export class GameScene extends Phaser.Scene {
       this.invulnerable = 0.24;
       this.clearNearbyProjectiles(150);
       this.parryCounterReady = true;
-      this.comboTimer = 0.75;
+      this.parryCounterTimer = COUNTER_ATTACK_WINDOW;
+      this.comboTimer = 0;
       audioSynth.chord([659, 880, 1047], 0.12, 0.025);
       this.showMessage('튕겨내기!', 0.45);
       return;
@@ -1705,6 +1723,14 @@ export class GameScene extends Phaser.Scene {
         this.renderVisuals();
       },
       playerFrame: () => Number(this.playerSprite.frame.name),
+      spriteSheetMetrics: () => ({
+        playerFrames: this.textures.get('player-warden-motion-v3').frameTotal - 1,
+        playerFrameWidth: this.playerSprite.frame.cutWidth,
+        playerFrameHeight: this.playerSprite.frame.cutHeight,
+        vfxFrames: this.textures.get('combat-vfx-v1').frameTotal - 1,
+        vfxFrameWidth: this.attackFxSprite.frame.cutWidth,
+        vfxFrameHeight: this.attackFxSprite.frame.cutHeight,
+      }),
       toggleVolume: () => this.toggleVolume(),
       toggleQuality: () => this.toggleQuality(),
     };

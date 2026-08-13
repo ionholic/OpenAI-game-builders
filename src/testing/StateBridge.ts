@@ -16,6 +16,14 @@ export interface QaBridge {
   ): string;
   setPlayerPosition(x: number, y: number): void;
   playerFrame(): number;
+  spriteSheetMetrics(): {
+    playerFrames: number;
+    playerFrameWidth: number;
+    playerFrameHeight: number;
+    vfxFrames: number;
+    vfxFrameWidth: number;
+    vfxFrameHeight: number;
+  };
   toggleVolume(): void;
   toggleQuality(): void;
 }

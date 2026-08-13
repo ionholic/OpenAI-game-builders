@@ -125,6 +125,18 @@ async function runDeterministicAcceptance(browser, errors) {
   const highCanvas = await page.locator('canvas').evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
   assert(!current.paused && current.settings.volume === 1 && current.settings.quality === 'high' && highCanvas.width === 1920 && highCanvas.height === 1080, 'QA-30 settings restore audio, 1080p rendering, and active play', { current, highCanvas });
 
+  const spriteSheetMetrics = await page.evaluate(() => window.__WOLHA_QA__.spriteSheetMetrics());
+  assert(
+    spriteSheetMetrics.playerFrames === 32 &&
+      spriteSheetMetrics.playerFrameWidth === 224 &&
+      spriteSheetMetrics.playerFrameHeight === 256 &&
+      spriteSheetMetrics.vfxFrames === 16 &&
+      spriteSheetMetrics.vfxFrameWidth === 384 &&
+      spriteSheetMetrics.vfxFrameHeight === 256,
+    'QA-37 normalized sprite sheets load with all frames and safe cell dimensions',
+    spriteSheetMetrics,
+  );
+
   const startX = current.player.x;
   await page.keyboard.down('ArrowRight');
   await advance(page, 250);
@@ -269,6 +281,16 @@ async function runDeterministicAcceptance(browser, errors) {
   assert(current.player.hp === hpBeforeGuard - 7, 'QA-22 held guard reduces damage to 35 percent after the parry window', current.player);
   await page.keyboard.up('KeyC');
   await advance(page, 700);
+  await advance(page, 100);
+  await page.keyboard.down('KeyC');
+  await advance(page, 1000 / 60);
+  await page.evaluate(() => window.__WOLHA_QA__.damagePlayer(20));
+  await page.keyboard.up('KeyC');
+  current = await state(page);
+  assert(current.player.parryCounterReady && current.player.parryCounterTimer > 0.7, 'QA-39 a fresh perfect guard starts a bounded counterattack window', current.player);
+  await advance(page, 800);
+  current = await state(page);
+  assert(!current.player.parryCounterReady && current.player.parryCounterTimer === 0, 'QA-39 unused counterattack readiness expires instead of persisting indefinitely', current.player);
   await page.evaluate(() => window.__WOLHA_QA__.clearWave());
 
   await page.evaluate(() => window.__WOLHA_QA__.setPlayerPosition(300, 500));
@@ -296,6 +318,8 @@ async function runDeterministicAcceptance(browser, errors) {
   current = await state(page);
   assert(Math.abs(current.player.x - blockedDashStart) < 3, 'QA-05 dash cannot be reused during cooldown', { blockedDashStart, endX: current.player.x });
   await advance(page, 1100);
+  current = await state(page);
+  assert(!current.player.dashAttackReady && current.player.dashAttackTimer === 0, 'QA-38 unused dash-slash readiness expires instead of persisting indefinitely', current.player);
   await page.evaluate(() => window.__WOLHA_QA__.setPlayerPosition(300, 500));
   const dashPointerBox = await page.locator('canvas').boundingBox();
   if (dashPointerBox) {
@@ -318,7 +342,7 @@ async function runDeterministicAcceptance(browser, errors) {
   await page.keyboard.up('KeyR');
   await advance(page, 1000 / 60);
   current = await state(page);
-  assert(current.altar.channel === 0 && current.altar.seals === 0, 'QA-09 releasing E resets incomplete purification', current.altar);
+  assert(current.altar.channel === 0 && current.altar.seals === 0, 'QA-09 releasing R resets incomplete purification', current.altar);
 
   const hpBeforeHit = (await state(page)).player.hp;
   await page.evaluate(() => window.__WOLHA_QA__.damagePlayer(10));
@@ -329,7 +353,7 @@ async function runDeterministicAcceptance(browser, errors) {
 
   await holdAndAdvance(page, 'KeyR', 2050);
   current = await state(page);
-  assert(current.altar.seals === 1 && current.wave.state === 'intermission', 'QA-10 two seconds of E purifies exactly one seal', current);
+  assert(current.altar.seals === 1 && current.wave.state === 'intermission', 'QA-10 two seconds of R purifies exactly one seal', current);
   await advance(page, 1100);
   current = await state(page);
   assert(current.wave.index === 2 && current.wave.name === '통곡의 죽림' && current.wave.remaining === 8, 'QA-07 stage two changes arena and introduces the intended eight enemies', current.wave);
